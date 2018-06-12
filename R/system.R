@@ -166,7 +166,7 @@ getGithubIssues <- function(username, password, owner, repository, ...){
 }
 
 
-getMongoURL <- function(host = NULL, port, database, username, pass, isSSL=FALSE, authSource=NULL, cluster = NULL, additionalParams = NULL) {
+getMongoURL <- function(host = NULL, port, database, username, pass, isSSL=FALSE, authSource=NULL, cluster = NULL, timeout = NULL, additionalParams = NULL, ...) {
   loadNamespace("stringr")
   loadNamespace("urltools")
 
@@ -205,6 +205,13 @@ getMongoURL <- function(host = NULL, port, database, username, pass, isSSL=FALSE
       url = stringr::str_c(url, "?", additionalParams)
     }
   }
+  if(!is.null(timeout) && timeout != ''){
+    if(stringr::str_detect(url, '\\?')) {
+      url = stringr::str_c(url, '&socketTimeoutMS=', timeout)
+    } else {
+      url = stringr::str_c(url, '?socketTimeoutMS=', timeout)
+    }
+  }
   return (url)
 }
 
@@ -212,7 +219,7 @@ getMongoURL <- function(host = NULL, port, database, username, pass, isSSL=FALSE
 #' @export
 queryMongoDB <- function(host = NULL, port = "", database, collection, username, password, query = "{}", flatten,
                          limit=100, isSSL=FALSE, authSource=NULL, fields="{}", sort="{}",
-                         skip=0, queryType = "find", pipeline="{}", cluster = NULL, additionalParamas = NULL, ...){
+                         skip=0, queryType = "find", pipeline="{}", cluster = NULL, timeout = NULL, additionalParamas = NULL, ...){
   if(!requireNamespace("mongolite")){stop("package mongolite must be installed.")}
   loadNamespace("jsonlite")
   if(!requireNamespace("GetoptLong")){stop("package GetoptLong must be installed.")}
@@ -220,7 +227,7 @@ queryMongoDB <- function(host = NULL, port = "", database, collection, username,
   # read stored password
   pass = saveOrReadPassword("mongodb", username, password)
   # get connection from connection pool
-  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParamas)
+  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParamas, timeout = timeout)
   if(fields == ""){
     fields = "{}"
   }
@@ -232,13 +239,21 @@ queryMongoDB <- function(host = NULL, port = "", database, collection, username,
     if(queryType == "aggregate"){
       pipeline <- convertUserInputToUtf8(pipeline)
       # set envir = parent.frame() to get variables from users environment, not papckage environment
-      data <- con$aggregate(pipeline = GetoptLong::qq(pipeline, envir = parent.frame()))
+      pipeline <- GetoptLong::qq(pipeline, envir = parent.frame())
+      # convert js query into mongo JSON, which mongolite understands.
+      pipeline <- jsToMongoJson(pipeline)
+      data <- con$aggregate(pipeline = pipeline)
     } else if (queryType == "find") {
       query <- convertUserInputToUtf8(query)
       fields <- convertUserInputToUtf8(fields)
       sort <- convertUserInputToUtf8(sort)
-      # set envir = parent.frame() to get variables from users environment, not papckage environment
-      data <- con$find(query = GetoptLong::qq(query, envir = parent.frame()), limit=limit, fields=fields, sort = sort, skip = skip)
+      # set envir = parent.frame() to get variables from users environment, not package environment
+      query <- GetoptLong::qq(query, envir = parent.frame())
+      # convert js query into mongo JSON, which mongolite understands.
+      query <- jsToMongoJson(query)
+      fields <- jsToMongoJson(fields)
+      sort <- jsToMongoJson(sort)
+      data <- con$find(query = query, limit=limit, fields=fields, sort = sort, skip = skip)
     }
   }, error = function(err) {
     clearDBConnection("mongodb", host, port, database, username, collection = collection, isSSL = isSSL, authSource = authSource)
@@ -260,12 +275,12 @@ queryMongoDB <- function(host = NULL, port = "", database, collection, username,
 #' Returns a data frame that has names of the collections in its "name" column.
 #' @export
 getMongoCollectionNames <- function(host = "", port = "", database = "", username = "",
-                                    password ="", isSSL=FALSE, authSource=NULL, cluster = NULL, additionalParams = "", ...){
+                                    password ="", isSSL=FALSE, authSource=NULL, cluster = NULL, timeout = "", additionalParams = "", ...){
   collection = "test" # dummy collection name. mongo command seems to work even if the collection does not exist.
   loadNamespace("jsonlite")
   if(!requireNamespace("mongolite")){stop("package mongolite must be installed.")}
   pass = saveOrReadPassword("mongodb", username, password)
-  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams)
+  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams, timeout = timeout)
   # command to list collections.
   # con$command is our addition in our mongolite fork.
   result <- con$command(command = '{"listCollections":1}')
@@ -284,11 +299,12 @@ getMongoCollectionNames <- function(host = "", port = "", database = "", usernam
 #' @export
 getMongoCollectionNumberOfRows <- function(host = NULL, port = "", database = "",
                                            username = "", password = "", collection = "",
-                                           isSSL=FALSE, authSource=NULL, cluster = NULL, additionalParams = "", ...){
+                                           isSSL=FALSE, authSource=NULL, cluster = NULL, additionalParams = "",
+                                           timeout = NULL, ...){
   loadNamespace("jsonlite")
   if(!requireNamespace("mongolite")){stop("package mongolite must be installed.")}
   pass = saveOrReadPassword("mongodb", username, password)
-  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams)
+  con <- getDBConnection("mongodb", host, port, database, username, pass, collection = collection, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams, timeout = timeout)
   tryCatch({
     result <- con$count()
   }, error = function(err) {
@@ -303,7 +319,7 @@ getMongoCollectionNumberOfRows <- function(host = NULL, port = "", database = ""
 #' If not, new connection is created and returned.
 #' @export
 getDBConnection <- function(type, host = NULL, port = "", databaseName = "", username = "", password = "", catalog = "", schema = "", dsn="", additionalParams = "",
-                            collection = "", isSSL = FALSE, authSource = NULL, cluster = NULL) {
+                            collection = "", isSSL = FALSE, authSource = NULL, cluster = NULL, timeout = NULL) {
 
   drv = NULL
   conn = NULL
@@ -331,7 +347,7 @@ getDBConnection <- function(type, host = NULL, port = "", databaseName = "", use
       }
     }
     if (is.null(conn)) {
-      url = getMongoURL(host = host, port = port, database = databaseName, username = username, pass = password, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams)
+      url = getMongoURL(host = host, port = port, database = databaseName, username = username, pass = password, isSSL = isSSL, authSource = authSource, cluster = cluster, additionalParams = additionalParams, timeout = timeout)
       conn <- mongolite::mongo(collection, url = url)
       connection_pool[[key]] <- conn
     }
@@ -747,13 +763,13 @@ queryODBC <- function(dsn,username, password, additionalParams, numOfRows = 0, q
 #' @param searchString - Query to search.
 #' @param tokenFileId - File id for aut
 #' @param withSentiment - Whether there should be sentiment column caluculated by get_sentiment.
+#' @param includeRts - Whether result should include retweets or not.
 #' @export
-getTwitter <- function(n=200, lang=NULL,  lastNDays=30, searchString, tokenFileId=NULL, withSentiment = FALSE, ...){
-  if(!requireNamespace("twitteR")){stop("package twitteR must be installed.")}
+getTwitter <- function(n=200, lang=NULL,  lastNDays=7, searchString, tokenFileId=NULL, withSentiment = FALSE, includeRts = FALSE, ...){
+  if(!requireNamespace("rtweet")){stop("package rtweet must be installed.")}
   loadNamespace("lubridate")
-
   twitter_token = getTwitterToken(tokenFileId)
-  twitteR::use_oauth_token(twitter_token)
+  twitter_token = rtweet:::check_token(twitter_token);
   # this parameter needs to be character with YYYY-MM-DD format
   # to get the latest tweets, pass NULL for until
   until = NULL
@@ -768,26 +784,26 @@ getTwitter <- function(n=200, lang=NULL,  lastNDays=30, searchString, tokenFileI
 
   # convert search string to UTF-8 before sending it on the wire on windows.
   searchString <- convertUserInputToUtf8(searchString)
-  tweetList <- twitteR::searchTwitter(searchString, n, lang, since, until, locale, geocode, sinceID, maxID, resultType, retryOnRateLimit)
-  # conver list to data frame
+  tweetList <- rtweet::search_tweets(q = searchString, token = twitter_token, n = n, lang = lang, verbose = TRUE, since = since,
+                                     unitl = until, locale = locale, geocode = geocode, include_rts = includeRts,
+                                     type = resultType,  retryonratelimit=TRUE)
   if(length(tweetList)>0){
-    ret <- twitteR::twListToDF(tweetList)
     if(withSentiment){
       # calculate sentiment
-      ret %>% dplyr::mutate(sentiment = get_sentiment(text))
+      tweetList %>% dplyr::mutate(sentiment = get_sentiment(text))
     } else {
-      ret
+      tweetList
     }
   } else {
     stop('No Tweets found.')
   }
-}
 
+}
 
 
 #' API to submit a Google Big Query Job
 #' @export
-submitGoogleBigQueryJob <- function(project, sqlquery, destination_table, write_disposition = "WRITE_TRUNCATE", tokenFieldId, ...){
+submitGoogleBigQueryJob <- function(project, sqlquery, destination_table, write_disposition = "WRITE_TRUNCATE", tokenFieldId, useStandardSQL = FALSE,  ...){
   if(!requireNamespace("bigrquery")){stop("package bigrquery must be installed.")}
   if(!requireNamespace("GetoptLong")){stop("package GetoptLong must be installed.")}
   if(!requireNamespace("stringr")){stop("package stringr must be installed.")}
@@ -802,27 +818,30 @@ submitGoogleBigQueryJob <- function(project, sqlquery, destination_table, write_
   # check if the query contains special key word for standardSQL
   # If we do not pass the useLegaySql argument, bigrquery set TRUE for it, so we need to expliclity set it to make standard SQL work.
   isStandardSQL <- stringr::str_detect(sqlquery, "#standardSQL")
+  if(!isStandardSQL && useStandardSQL){
+    isStandardSQL = TRUE; # honor value provided by paramerer
+  }
   # set envir = parent.frame() to get variables from users environment, not papckage environment
-  job <- bigrquery::insert_query_job(GetoptLong::qq(sqlquery, envir = parent.frame()), project, destination_table = destination_table, write_disposition = write_disposition, use_legacy_sql = isStandardSQL == FALSE)
-  job <- bigrquery::wait_for(job)
-  isCacheHit <- job$statistics$query$cacheHit
+  job <- bigrquery::bq_perform_query(query = GetoptLong::qq(sqlquery, envir = parent.frame()), billing = project,  use_legacy_sql = !isStandardSQL)
+  bigrquery::bq_job_wait(job)
+  meta <- bigrquery::bq_job_meta(job)
+  isCacheHit <- meta$statistics$query$cacheHit
   # if cache hit case, totalBytesProcessed info is not available. So set it as -1
-  totalBytesProcessed <- ifelse(isCacheHit, -1, job$statistics$totalBytesProcessed)
+  totalBytesProcessed <- ifelse(isCacheHit, -1, meta$statistics$totalBytesProcessed)
   # if cache hit case, recordsWritten info is not avalable. So set it as -1
-  numOfRowsProcessed <- ifelse(isCacheHit, -1, job$statistics$query$queryPlan[[1]]$recordsWritten)
-  dest <- job$configuration$query$destinationTable
+  numOfRowsProcessed <- ifelse(isCacheHit, -1, meta$statistics$query$queryPlan[[1]]$recordsWritten)
+  dest <- meta$configuration$query$destinationTable
   result <- data.frame(tableId = dest$tableId, datasetId = dest$datasetId, numOfRows = numOfRowsProcessed, totalBytesProcessed = totalBytesProcessed)
 }
 
 #' API to get a data from google BigQuery table
 #' @export
-getDataFromGoogleBigQueryTable <- function(project, dataset, table, page_size = 10000, max_page, tokenFileId){
+getDataFromGoogleBigQueryTable <- function(project, dataset, table, page_size = 10000, max_page, tokenFileId, max_connections = 8){
   if(!requireNamespace("bigrquery")){stop("package bigrquery must be installed.")}
   token <- getGoogleTokenForBigQuery(tokenFileId)
   bigrquery::set_access_cred(token)
-
-  bigrquery::list_tabledata(project, dataset, table, page_size = page_size,
-                 table_info = NULL, max_pages = max_page)
+  tb <- bigrquery::bq_table(project = project, dataset = dataset, table = table)
+  bigrquery::bq_table_download(tb,  page_size = page_size, max_results = max_page, quiet = TRUE, max_connections = max_connections)
 }
 
 #' API to extract data from google BigQuery table to Google Cloud Storage
@@ -919,7 +938,7 @@ getDataFromGoogleBigQueryTableViaCloudStorage <- function(bucketProjectId, dataS
 #' @param bucket - Google Cloud Storage Bucket
 #' @param folder - Folder under Google Cloud Storage Bucket where temp files are extracted.
 #' @export
-executeGoogleBigQuery <- function(project, query, destinationTable, pageSize = 100000, maxPage = 10, writeDisposition = "WRITE_TRUNCATE", tokenFileId, bucketProjectId, bucket=NULL, folder=NULL, ...){
+executeGoogleBigQuery <- function(project, query, destinationTable, pageSize = 100000, maxPage = 10, writeDisposition = "WRITE_TRUNCATE", tokenFileId, bucketProjectId, bucket=NULL, folder=NULL, max_connections = 8, useStandardSQL = FALSE, ...){
   if(!requireNamespace("bigrquery")){stop("package bigrquery must be installed.")}
   if(!requireNamespace("GetoptLong")){stop("package GetoptLong must be installed.")}
   if(!requireNamespace("stringr")){stop("package stringr must be installed.")}
@@ -936,7 +955,7 @@ executeGoogleBigQuery <- function(project, query, destinationTable, pageSize = 1
     bqtable <- NULL
     query <- convertUserInputToUtf8(query)
     # submit a query to get a result (for refresh data frame case)
-    result <- exploratory::submitGoogleBigQueryJob(bucketProjectId, query, destinationTable, writeDisposition = "WRITE_TRUNCATE", tokenFileId);
+    result <- exploratory::submitGoogleBigQueryJob(project = bucketProjectId, sqlquery = query, tokenFieldId =  tokenFileId, useStandardSQL = useStandardSQL);
     # extranct result from Google BigQuery to Google Cloud Storage and import
     df <- getDataFromGoogleBigQueryTableViaCloudStorage(bucketProjectId, dataSet, table, bucket, folder, tokenFileId)
   } else {
@@ -945,9 +964,12 @@ executeGoogleBigQuery <- function(project, query, destinationTable, pageSize = 1
     # check if the query contains special key word for standardSQL
     # If we do not pass the useLegaySql argument, bigrquery set TRUE for it, so we need to expliclity set it to make standard SQL work.
     isStandardSQL <- stringr::str_detect(query, "#standardSQL")
+    if(!isStandardSQL && useStandardSQL) { # honor value provided by parameter
+      isStandardSQL = TRUE;
+    }
     # set envir = parent.frame() to get variables from users environment, not papckage environment
-    df <- bigrquery::query_exec(GetoptLong::qq(query, envir = parent.frame()), project = project, destination_table = destinationTable,
-                                page_size = pageSize, max_page = maxPage, write_disposition = writeDisposition, use_legacy_sql = isStandardSQL == FALSE)
+    tb <- bigrquery::bq_project_query(x = project, query = GetoptLong::qq(query, envir = parent.frame()), quiet = TRUE, use_legacy_sql = !isStandardSQL)
+    df <- bigrquery::bq_table_download(x = tb, max_results = Inf, page_size = pageSize, max_connections = max_connections, quiet = TRUE)
   }
   df
 }
@@ -1466,7 +1488,9 @@ read_delim_file <- function(file, delim, quote = '"',
                       locale = locale, na = na, quoted_na = quoted_na, comment = comment, trim_ws = trim_ws, skip = skip, n_max = n_max, guess_max = guess_max, progress = progress)
   } else {
     # if it's local file simply call readr::read_delim
-    readr::read_delim(file, delim, quote = quote, escape_backslash = escape_backslash, escape_double = escape_double, col_names = col_names, col_types = col_types,
+    # reading through file() is to be able to read files with path that includes multibyte chars.
+    # without it, error is thrown from inside read_delim.
+    readr::read_delim(file(file), delim, quote = quote, escape_backslash = escape_backslash, escape_double = escape_double, col_names = col_names, col_types = col_types,
                       locale = locale, na = na, quoted_na = quoted_na, comment = comment, trim_ws = trim_ws, skip = skip, n_max = n_max, guess_max = guess_max, progress = progress)
   }
 }
@@ -1483,7 +1507,9 @@ guess_csv_file_encoding <- function(file,  n_max = 1e4, threshold = 0.20){
     readr::guess_encoding(tmp, n_max, threshold)
   } else {
     # if it's local file simply call readr::read_delim
-    readr::guess_encoding(file, n_max, threshold)
+    # reading through read_lines_raw(file()) is to be able to read files with path that includes multibyte chars.
+    # without it, error is thrown from inside guess_encoding.
+    readr::guess_encoding(readr::read_lines_raw(file(file), n_max), threshold=threshold)
   }
 }
 
