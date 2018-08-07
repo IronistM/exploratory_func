@@ -269,16 +269,6 @@ upper_gather <- function(mat, names=NULL, diag=NULL, cnames = c("Var1", "Var2", 
   }
 }
 
-#' group by other columns so that next action can preserve as many columns as possible
-group_exclude <- function(df, ...){
-  loadNamespace("dplyr")
-  cols <- as.character(substitute(list(...)))[-1]
-  excluded <- setdiff(colnames(df), cols)
-  # exclude list column to avoid error from dplyr::group_by
-  target <- excluded[!sapply(df[,excluded], is.list)]
-  dplyr::group_by(df, !!!rlang::syms(target))
-}
-
 #' prevent conflict of 2 character vectors and avoid it by adding .new to elements in the second
 #' @export
 avoid_conflict <- function(origin, new, suffix = ".new"){
@@ -1126,11 +1116,18 @@ unnest_without_empty_ <- function(data, nested_col){
   }
 }
 
+#' Count TRUE in a vector
+#' @param x vector
+#' @export
+true_count <- function(x){
+  sum(x, na.rm = TRUE)
+}
+
 #' Count FALSE in a vector
 #' @param x vector
 #' @export
 false_count <- function(x){
-  sum(!x)
+  sum(!x, na.rm = TRUE)
 }
 
 #' Count NA in a vector
@@ -1296,6 +1293,16 @@ extract_from_date <- function(x, type = "fltoyear") {
 }
 
 
+#' Calculate R-Squared 
+#' @export
+r_squared <- function (x, y) {
+  # https://stackoverflow.com/questions/40901445/function-to-calculate-r2-r-squared-in-r
+  # complete.obs is to ignore NAs.
+  # https://stackoverflow.com/questions/31412514/na-values-not-being-excluded-in-cor
+  # TODO: revisit this again. How can R square be a function of only cor??
+  cor(x, y, use="complete.obs") ^ 2
+}
+
 #' Calculate MAE.
 #' @param actual - Vector that includes actual value. The part is_test_data is FALSE should be actual value.
 #' @param predicted - Vector that includes predicted value. The part is_test_data is TRUE should be predicted value.
@@ -1313,9 +1320,11 @@ mae <- function(actual, predicted, is_test_data) {
 #' @param predicted - Vector that includes predicted value. The part is_test_data is TRUE should be predicted value.
 #' @param is_test_data - logical vector that indicates test data portion of actual and predicted.
 #' @export
-rmse <- function(actual, predicted, is_test_data) {
-  actual <- actual[is_test_data]
-  predicted <- predicted[is_test_data]
+rmse <- function(actual, predicted, is_test_data=NULL) {
+  if (!is.null(is_test_data)) {
+    actual <- actual[is_test_data]
+    predicted <- predicted[is_test_data]
+  }
   ret <- sqrt(mean((actual-predicted)^2, na.rm=TRUE))
   ret
 }
